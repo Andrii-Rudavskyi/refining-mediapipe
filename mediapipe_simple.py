@@ -148,6 +148,18 @@ class FaceDetectionGUI:
         self.analyze_button = ttk.Button(viz_3d_frame, text="Analyze Proportions", command=self.analyze_face_proportions)
         self.analyze_button.pack(pady=5)
         
+        # Align pupils button
+        self.align_button = ttk.Button(viz_3d_frame, text="Align Pupils", command=self.align_pupils)
+        self.align_button.pack(pady=5)
+        
+        # Align sockets button
+        self.align_sockets_button = ttk.Button(viz_3d_frame, text="Align Sockets", command=self.align_sockets)
+        self.align_sockets_button.pack(pady=5)
+        
+        # Text widget for displaying aligned coordinates
+        self.coords_text = tk.Text(viz_3d_frame, height=8, width=55, font=("Courier", 9))
+        self.coords_text.pack(pady=5, padx=5)
+        
         # Frame slider
         self.frame_slider_frame = ttk.Frame(viz_3d_frame)
         self.frame_slider_frame.pack(pady=5, fill=tk.X)
@@ -164,6 +176,7 @@ class FaceDetectionGUI:
         # Loaded landmarks data
         self.landmarks_3d_data = None
         self.current_3d_frame = 0
+        self.aligned_landmarks = None
         
         # Create parameters frame
         params_frame = ttk.LabelFrame(main_frame, text="Parameters", padding="5")
@@ -285,18 +298,29 @@ class FaceDetectionGUI:
         
         self.ax_3d.scatter(xs, ys, zs, c='cyan', marker='o', s=1)
         
-        # Highlight pupils
+        # Highlight key landmarks
         left_pupil_idx = 468
         right_pupil_idx = 473
-        if len(landmarks) > max(left_pupil_idx, right_pupil_idx):
+        nose_tip_idx = 1
+        chin_idx = 152
+        
+        if len(landmarks) > max(left_pupil_idx, right_pupil_idx, nose_tip_idx, chin_idx):
             self.ax_3d.scatter([landmarks[left_pupil_idx, 0]], 
                              [landmarks[left_pupil_idx, 1]], 
                              [landmarks[left_pupil_idx, 2]], 
-                             c='green', marker='o', s=50, label='Left Pupil')
+                             c='green', marker='o', s=20, label='Left Pupil')
             self.ax_3d.scatter([landmarks[right_pupil_idx, 0]], 
                              [landmarks[right_pupil_idx, 1]], 
                              [landmarks[right_pupil_idx, 2]], 
-                             c='red', marker='o', s=50, label='Right Pupil')
+                             c='red', marker='o', s=20, label='Right Pupil')
+            self.ax_3d.scatter([landmarks[nose_tip_idx, 0]], 
+                             [landmarks[nose_tip_idx, 1]], 
+                             [landmarks[nose_tip_idx, 2]], 
+                             c='yellow', marker='o', s=20, label='Nose Tip')
+            self.ax_3d.scatter([landmarks[chin_idx, 0]], 
+                             [landmarks[chin_idx, 1]], 
+                             [landmarks[chin_idx, 2]], 
+                             c='magenta', marker='o', s=20, label='Chin')
         
         self.ax_3d.set_xlabel('X')
         self.ax_3d.set_ylabel('Y')
@@ -312,6 +336,299 @@ class FaceDetectionGUI:
         self.ax_3d.set_xlim(mid_x - max_range, mid_x + max_range)
         self.ax_3d.set_ylim(mid_y - max_range, mid_y + max_range)
         self.ax_3d.set_zlim(mid_z - max_range, mid_z + max_range)
+        
+        self.canvas_3d.draw()
+    
+    def align_pupils(self):
+        """Align landmarks so pupils are at canonical positions (-31.5, 0, 0) and (31.5, 0, 0)"""
+        if self.landmarks_3d_data is None or len(self.landmarks_3d_data) == 0:
+            messagebox.showwarning("Warning", "Please load a landmarks CSV file first")
+            return
+        
+        # Get current frame landmarks
+        frame_idx = int(self.frame_slider.get())
+        if frame_idx >= len(self.landmarks_3d_data):
+            frame_idx = len(self.landmarks_3d_data) - 1
+        
+        frame_num, landmarks = self.landmarks_3d_data[frame_idx]
+        
+        # Landmark indices
+        LEFT_PUPIL_IDX = 468
+        RIGHT_PUPIL_IDX = 473
+        NOSE_TIP_IDX = 1
+        CHIN_IDX = 152
+        LEFT_MOUTH_IDX = 61  # Left mouth corner
+        RIGHT_MOUTH_IDX = 291  # Right mouth corner
+        
+        # Extract pupil positions
+        left_pupil = landmarks[LEFT_PUPIL_IDX].copy()
+        right_pupil = landmarks[RIGHT_PUPIL_IDX].copy()
+        
+        # Step 1: Translate so midpoint of pupils is at origin
+        eye_midpoint = (left_pupil + right_pupil) / 2.0
+        landmarks_centered = landmarks - eye_midpoint
+        
+        # Step 2: Calculate current pupil direction and rotate to align with X-axis in 3D
+        pupil_vector = landmarks_centered[RIGHT_PUPIL_IDX] - landmarks_centered[LEFT_PUPIL_IDX]
+        
+        # Normalize pupil vector
+        pupil_vector_norm = pupil_vector / np.linalg.norm(pupil_vector)
+        
+        # Target vector is X-axis
+        target_vector = np.array([1.0, 0.0, 0.0])
+        
+        # Calculate rotation axis (cross product) and angle
+        rotation_axis = np.cross(pupil_vector_norm, target_vector)
+        rotation_axis_length = np.linalg.norm(rotation_axis)
+        
+        if rotation_axis_length > 1e-6:  # Not already aligned
+            rotation_axis = rotation_axis / rotation_axis_length
+            rotation_angle = np.arccos(np.clip(np.dot(pupil_vector_norm, target_vector), -1.0, 1.0))
+            
+            # Rodrigues' rotation formula
+            K = np.array([
+                [0, -rotation_axis[2], rotation_axis[1]],
+                [rotation_axis[2], 0, -rotation_axis[0]],
+                [-rotation_axis[1], rotation_axis[0], 0]
+            ])
+            
+            rotation_matrix = np.eye(3) + np.sin(rotation_angle) * K + (1 - np.cos(rotation_angle)) * (K @ K)
+        else:
+            # Already aligned or opposite direction
+            if np.dot(pupil_vector_norm, target_vector) < 0:
+                # Opposite direction, rotate 180 degrees around Y-axis
+                rotation_matrix = np.array([
+                    [-1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, -1]
+                ])
+            else:
+                rotation_matrix = np.eye(3)
+        
+        landmarks_rotated = landmarks_centered @ rotation_matrix.T
+        
+        # Step 3: Rotate around X-axis to bring nose tip Y to 0
+        nose_tip_rotated = landmarks_rotated[NOSE_TIP_IDX]
+        nose_y = nose_tip_rotated[1]
+        nose_z = nose_tip_rotated[2]
+        
+        # Calculate angle to rotate nose to XZ plane (Y=0)
+        nose_angle = np.arctan2(nose_y, nose_z)
+        
+        # Rotation matrix around X-axis
+        cos_nose = np.cos(nose_angle)
+        sin_nose = np.sin(nose_angle)
+        rotation_matrix_x = np.array([
+            [1, 0, 0],
+            [0, cos_nose, -sin_nose],
+            [0, sin_nose, cos_nose]
+        ])
+        
+        landmarks_rotated = landmarks_rotated @ rotation_matrix_x.T
+        
+        # Step 4: Scale so IPD = 63mm (pupils at ±31.5mm)
+        current_ipd = np.linalg.norm(landmarks_rotated[RIGHT_PUPIL_IDX] - landmarks_rotated[LEFT_PUPIL_IDX])
+        scale_factor = 63.0 / current_ipd
+        
+        self.aligned_landmarks = landmarks_rotated * scale_factor
+        
+        # Extract key landmark positions
+        left_pupil_aligned = self.aligned_landmarks[LEFT_PUPIL_IDX]
+        right_pupil_aligned = self.aligned_landmarks[RIGHT_PUPIL_IDX]
+        nose_tip_aligned = self.aligned_landmarks[NOSE_TIP_IDX]
+        chin_aligned = self.aligned_landmarks[CHIN_IDX]
+        left_mouth_aligned = self.aligned_landmarks[LEFT_MOUTH_IDX]
+        right_mouth_aligned = self.aligned_landmarks[RIGHT_MOUTH_IDX]
+        
+        # Format text for display
+        coords_text = f"""Left Pupil:  ({left_pupil_aligned[0]:7.2f}, {left_pupil_aligned[1]:7.2f}, {left_pupil_aligned[2]:7.2f})
+Right Pupil: ({right_pupil_aligned[0]:7.2f}, {right_pupil_aligned[1]:7.2f}, {right_pupil_aligned[2]:7.2f})
+Nose Tip:    ({nose_tip_aligned[0]:7.2f}, {nose_tip_aligned[1]:7.2f}, {nose_tip_aligned[2]:7.2f})
+Chin:        ({chin_aligned[0]:7.2f}, {chin_aligned[1]:7.2f}, {chin_aligned[2]:7.2f})
+L Mouth:     ({left_mouth_aligned[0]:7.2f}, {left_mouth_aligned[1]:7.2f}, {left_mouth_aligned[2]:7.2f})
+R Mouth:     ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {right_mouth_aligned[2]:7.2f})"""
+        
+        # Update text widget
+        self.coords_text.delete('1.0', tk.END)
+        self.coords_text.insert('1.0', coords_text)
+        
+        # Update 3D plot with aligned coordinates
+        self.update_3d_plot_aligned()
+    
+    def align_sockets(self):
+        """Align landmarks using eye sockets (inner eye corners) at canonical positions (-31.5, 0, 0) and (31.5, 0, 0)"""
+        if self.landmarks_3d_data is None or len(self.landmarks_3d_data) == 0:
+            messagebox.showwarning("Warning", "Please load a landmarks CSV file first")
+            return
+        
+        # Get current frame landmarks
+        frame_idx = int(self.frame_slider.get())
+        if frame_idx >= len(self.landmarks_3d_data):
+            frame_idx = len(self.landmarks_3d_data) - 1
+        
+        frame_num, landmarks = self.landmarks_3d_data[frame_idx]
+        
+        # Landmark indices
+        LEFT_EYE_INNER_IDX = 133  # Left eye inner corner
+        RIGHT_EYE_INNER_IDX = 362  # Right eye inner corner
+        NOSE_TIP_IDX = 1
+        CHIN_IDX = 152
+        LEFT_MOUTH_IDX = 61  # Left mouth corner
+        RIGHT_MOUTH_IDX = 291  # Right mouth corner
+        
+        # Extract eye corner positions
+        left_eye_corner = landmarks[LEFT_EYE_INNER_IDX].copy()
+        right_eye_corner = landmarks[RIGHT_EYE_INNER_IDX].copy()
+        
+        # Step 1: Translate so midpoint of eye corners is at origin
+        eye_midpoint = (left_eye_corner + right_eye_corner) / 2.0
+        landmarks_centered = landmarks - eye_midpoint
+        
+        # Step 2: Calculate current eye corner direction and rotate to align with X-axis in 3D
+        corner_vector = landmarks_centered[RIGHT_EYE_INNER_IDX] - landmarks_centered[LEFT_EYE_INNER_IDX]
+        
+        # Normalize corner vector
+        corner_vector_norm = corner_vector / np.linalg.norm(corner_vector)
+        
+        # Target vector is X-axis
+        target_vector = np.array([1.0, 0.0, 0.0])
+        
+        # Calculate rotation axis (cross product) and angle
+        rotation_axis = np.cross(corner_vector_norm, target_vector)
+        rotation_axis_length = np.linalg.norm(rotation_axis)
+        
+        if rotation_axis_length > 1e-6:  # Not already aligned
+            rotation_axis = rotation_axis / rotation_axis_length
+            rotation_angle = np.arccos(np.clip(np.dot(corner_vector_norm, target_vector), -1.0, 1.0))
+            
+            # Rodrigues' rotation formula
+            K = np.array([
+                [0, -rotation_axis[2], rotation_axis[1]],
+                [rotation_axis[2], 0, -rotation_axis[0]],
+                [-rotation_axis[1], rotation_axis[0], 0]
+            ])
+            
+            rotation_matrix = np.eye(3) + np.sin(rotation_angle) * K + (1 - np.cos(rotation_angle)) * (K @ K)
+        else:
+            # Already aligned or opposite direction
+            if np.dot(corner_vector_norm, target_vector) < 0:
+                # Opposite direction, rotate 180 degrees around Y-axis
+                rotation_matrix = np.array([
+                    [-1, 0, 0],
+                    [0, 1, 0],
+                    [0, 0, -1]
+                ])
+            else:
+                rotation_matrix = np.eye(3)
+        
+        landmarks_rotated = landmarks_centered @ rotation_matrix.T
+        
+        # Step 3: Rotate around X-axis to bring nose tip Y to 0
+        nose_tip_rotated = landmarks_rotated[NOSE_TIP_IDX]
+        nose_y = nose_tip_rotated[1]
+        nose_z = nose_tip_rotated[2]
+        
+        # Calculate angle to rotate nose to XZ plane (Y=0)
+        nose_angle = np.arctan2(nose_y, nose_z)
+        
+        # Rotation matrix around X-axis
+        cos_nose = np.cos(nose_angle)
+        sin_nose = np.sin(nose_angle)
+        rotation_matrix_x = np.array([
+            [1, 0, 0],
+            [0, cos_nose, -sin_nose],
+            [0, sin_nose, cos_nose]
+        ])
+        
+        landmarks_rotated = landmarks_rotated @ rotation_matrix_x.T
+        
+        # Step 4: Scale so distance between eye corners = 63mm (corners at ±31.5mm)
+        current_distance = np.linalg.norm(landmarks_rotated[RIGHT_EYE_INNER_IDX] - landmarks_rotated[LEFT_EYE_INNER_IDX])
+        scale_factor = 63.0 / current_distance
+        
+        self.aligned_landmarks = landmarks_rotated * scale_factor
+        
+        # Extract key landmark positions
+        left_corner_aligned = self.aligned_landmarks[LEFT_EYE_INNER_IDX]
+        right_corner_aligned = self.aligned_landmarks[RIGHT_EYE_INNER_IDX]
+        nose_tip_aligned = self.aligned_landmarks[NOSE_TIP_IDX]
+        chin_aligned = self.aligned_landmarks[CHIN_IDX]
+        left_mouth_aligned = self.aligned_landmarks[LEFT_MOUTH_IDX]
+        right_mouth_aligned = self.aligned_landmarks[RIGHT_MOUTH_IDX]
+        
+        # Format text for display
+        coords_text = f"""Left Socket:  ({left_corner_aligned[0]:7.2f}, {left_corner_aligned[1]:7.2f}, {left_corner_aligned[2]:7.2f})
+Right Socket: ({right_corner_aligned[0]:7.2f}, {right_corner_aligned[1]:7.2f}, {right_corner_aligned[2]:7.2f})
+Nose Tip:     ({nose_tip_aligned[0]:7.2f}, {nose_tip_aligned[1]:7.2f}, {nose_tip_aligned[2]:7.2f})
+Chin:         ({chin_aligned[0]:7.2f}, {chin_aligned[1]:7.2f}, {chin_aligned[2]:7.2f})
+L Mouth:      ({left_mouth_aligned[0]:7.2f}, {left_mouth_aligned[1]:7.2f}, {left_mouth_aligned[2]:7.2f})
+R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {right_mouth_aligned[2]:7.2f})"""
+        
+        # Update text widget
+        self.coords_text.delete('1.0', tk.END)
+        self.coords_text.insert('1.0', coords_text)
+        
+        # Update 3D plot with aligned coordinates
+        self.update_3d_plot_aligned()
+    
+    def update_3d_plot_aligned(self):
+        """Update 3D plot with aligned landmarks"""
+        if self.aligned_landmarks is None:
+            return
+        
+        self.ax_3d.clear()
+        
+        # Plot all landmarks
+        xs = self.aligned_landmarks[:, 0]
+        ys = self.aligned_landmarks[:, 1]
+        zs = self.aligned_landmarks[:, 2]
+        
+        self.ax_3d.scatter(xs, ys, zs, c='cyan', marker='.', s=1)
+        
+        # Highlight key landmarks
+        left_pupil_idx = 468
+        right_pupil_idx = 473
+        nose_tip_idx = 1
+        chin_idx = 152
+        left_mouth_idx = 61
+        right_mouth_idx = 291
+        
+        self.ax_3d.scatter([self.aligned_landmarks[left_pupil_idx, 0]], 
+                         [self.aligned_landmarks[left_pupil_idx, 1]], 
+                         [self.aligned_landmarks[left_pupil_idx, 2]], 
+                         c='green', marker='o', s=20, label='Left Pupil')
+        self.ax_3d.scatter([self.aligned_landmarks[right_pupil_idx, 0]], 
+                         [self.aligned_landmarks[right_pupil_idx, 1]], 
+                         [self.aligned_landmarks[right_pupil_idx, 2]], 
+                         c='red', marker='o', s=20, label='Right Pupil')
+        self.ax_3d.scatter([self.aligned_landmarks[nose_tip_idx, 0]], 
+                         [self.aligned_landmarks[nose_tip_idx, 1]], 
+                         [self.aligned_landmarks[nose_tip_idx, 2]], 
+                         c='yellow', marker='o', s=20, label='Nose Tip')
+        self.ax_3d.scatter([self.aligned_landmarks[chin_idx, 0]], 
+                         [self.aligned_landmarks[chin_idx, 1]], 
+                         [self.aligned_landmarks[chin_idx, 2]], 
+                         c='magenta', marker='o', s=20, label='Chin')
+        self.ax_3d.scatter([self.aligned_landmarks[left_mouth_idx, 0]], 
+                         [self.aligned_landmarks[left_mouth_idx, 1]], 
+                         [self.aligned_landmarks[left_mouth_idx, 2]], 
+                         c='blue', marker='o', s=20, label='L Mouth')
+        self.ax_3d.scatter([self.aligned_landmarks[right_mouth_idx, 0]], 
+                         [self.aligned_landmarks[right_mouth_idx, 1]], 
+                         [self.aligned_landmarks[right_mouth_idx, 2]], 
+                         c='orange', marker='o', s=20, label='R Mouth')
+        
+        self.ax_3d.set_xlabel('X (mm)')
+        self.ax_3d.set_ylabel('Y (mm)')
+        self.ax_3d.set_zlabel('Z (mm)')
+        self.ax_3d.set_title('Aligned Face Landmarks (Canonical Space)')
+        self.ax_3d.legend()
+        
+        # Equal aspect ratio
+        max_range = 100  # Roughly face size in mm
+        self.ax_3d.set_xlim(-max_range, max_range)
+        self.ax_3d.set_ylim(-max_range, max_range)
+        self.ax_3d.set_zlim(-max_range, max_range)
         
         self.canvas_3d.draw()
     
