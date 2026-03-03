@@ -16,7 +16,7 @@ class AlgoSwitcherGUI:
         self.root.geometry("750x350")
         
         # Settings file for saving product code
-        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "algo_switcher_settings.ini")
+        self.settings_file = os.path.join(self.get_executable_dir(), "algo_switcher_settings.ini")
         
         # A/B testing mode flag
         self.ab_testing_mode = False
@@ -169,6 +169,24 @@ class AlgoSwitcherGUI:
         # Load and display current value
         self.update_status()
     
+    def get_executable_dir(self):
+        """Get the directory where the executable is located (for saving files)"""
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            return os.path.dirname(sys.executable)
+        else:
+            # Running as script
+            return os.path.dirname(os.path.abspath(__file__))
+    
+    def get_resource_dir(self):
+        """Get the directory where bundled resources are located (for loading files)"""
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable - use PyInstaller's temp folder
+            return sys._MEIPASS
+        else:
+            # Running as script
+            return os.path.dirname(os.path.abspath(__file__))
+    
     def check_admin(self):
         """Check if running with administrator privileges"""
         try:
@@ -313,7 +331,7 @@ class AlgoSwitcherGUI:
     
     def load_tests_from_excel(self):
         """Load tests and instructions from instructions.xlsx"""
-        excel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "abtesting_instructions", "instructions.xlsx")
+        excel_path = os.path.join(self.get_resource_dir(), "abtesting_instructions", "instructions.xlsx")
         
         if not os.path.exists(excel_path):
             messagebox.showerror("Error", f"Instructions file not found:\n{excel_path}")
@@ -432,7 +450,7 @@ class AlgoSwitcherGUI:
         """Complete A/B testing and save results"""
         # Save results to CSV
         log_filename = f"ab_testing_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), log_filename)
+        log_path = os.path.join(self.get_executable_dir(), log_filename)
         
         try:
             with open(log_path, 'w', newline='', encoding='utf-8') as f:
