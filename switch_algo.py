@@ -13,7 +13,7 @@ class AlgoSwitcherGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Eye Tracker Algorithm Switcher")
-        self.root.geometry("750x350")
+        self.root.geometry("750x750")
         
         # Settings file for saving product code
         self.settings_file = os.path.join(self.get_executable_dir(), "algo_switcher_settings.ini")
@@ -145,26 +145,77 @@ class AlgoSwitcherGUI:
         
         # Feedback frame
         self.feedback_frame = ttk.Frame(self.ab_field_frame)
-        
-        self.feedback_question = ttk.Label(self.feedback_frame, 
-                                          text="Compared to previous:", 
+
+        self.feedback_question = ttk.Label(self.feedback_frame,
+                                          text="Compared to previous:",
                                           font=('Arial', 10))
         self.feedback_question.pack(pady=5)
-        
+
+
         feedback_buttons_frame = ttk.Frame(self.feedback_frame)
         feedback_buttons_frame.pack(pady=5)
-        
-        self.worse_button = ttk.Button(feedback_buttons_frame, text="Worse", 
-                                      command=lambda: self.record_feedback("Worse"))
+
+        self.worse_button = ttk.Button(feedback_buttons_frame, text="Worse",
+                          command=lambda: self.record_feedback_with_comment("Worse"))
         self.worse_button.pack(side=tk.LEFT, padx=5)
-        
-        self.same_button = ttk.Button(feedback_buttons_frame, text="Same", 
-                                     command=lambda: self.record_feedback("Same"))
+
+        self.same_button = ttk.Button(feedback_buttons_frame, text="No difference",
+                         command=lambda: self.record_feedback_with_comment("No difference"))
         self.same_button.pack(side=tk.LEFT, padx=5)
-        
-        self.better_button = ttk.Button(feedback_buttons_frame, text="Better", 
-                                       command=lambda: self.record_feedback("Better"))
+
+        self.better_button = ttk.Button(feedback_buttons_frame, text="Better",
+                           command=lambda: self.record_feedback_with_comment("Better"))
         self.better_button.pack(side=tk.LEFT, padx=5)
+
+        # Additional comments label and input (moved below buttons)
+        self.comments_label = ttk.Label(self.feedback_frame, text="Additional comments (optional):", font=('Arial', 9))
+        self.comments_label.pack(pady=(10, 2))
+        self.comments_entry = ttk.Entry(self.feedback_frame, width=40)
+        self.comments_entry.pack(pady=(0, 2))
+        self.comments_desc = ttk.Label(self.feedback_frame, text="You can provide extra feedback here.", font=('Arial', 8), foreground='gray')
+        self.comments_desc.pack(pady=(0, 10))
+
+        # Load and display current value
+        self.update_status()
+
+    def record_feedback_with_comment(self, feedback):
+        """Record user feedback with additional comments and move to next test"""
+        comment = self.comments_entry.get().strip()
+        self.comments_entry.delete(0, tk.END)  # Clear after use
+        self.record_feedback(feedback, comment)
+
+    def record_feedback(self, feedback, comment=None):
+        """Record user feedback and move to next test"""
+        test = self.ab_tests[self.current_test_idx]
+
+        # Get current algorithm from INI
+        current_algo = self.get_current_algo()
+
+        # Record result
+        result = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'test_name': test['name'],
+            'instruction': test['instruction'],
+            'repetition': self.current_repetition + 1,
+            'algorithm': current_algo,
+            'feedback': feedback,
+            'comments': comment if comment is not None else ""
+        }
+        self.test_results.append(result)
+
+        # Move to next repetition
+        self.current_repetition += 1
+
+        if self.current_repetition >= self.total_repetitions:
+            # Move to next test
+            self.current_test_idx += 1
+            self.current_repetition = 0
+
+        # Hide feedback frame
+        self.feedback_frame.pack_forget()
+
+        # Show next test
+        self.show_next_test()
         
         # Load and display current value
         self.update_status()
@@ -414,37 +465,7 @@ class AlgoSwitcherGUI:
             # Show feedback options
             self.feedback_frame.pack(pady=10)
     
-    def record_feedback(self, feedback):
-        """Record user feedback and move to next test"""
-        test = self.ab_tests[self.current_test_idx]
-        
-        # Get current algorithm from INI
-        current_algo = self.get_current_algo()
-        
-        # Record result
-        result = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'test_name': test['name'],
-            'instruction': test['instruction'],
-            'repetition': self.current_repetition + 1,
-            'algorithm': current_algo,
-            'feedback': feedback
-        }
-        self.test_results.append(result)
-        
-        # Move to next repetition
-        self.current_repetition += 1
-        
-        if self.current_repetition >= self.total_repetitions:
-            # Move to next test
-            self.current_test_idx += 1
-            self.current_repetition = 0
-        
-        # Hide feedback frame
-        self.feedback_frame.pack_forget()
-        
-        # Show next test
-        self.show_next_test()
+    # (Removed duplicate/old record_feedback definition. Only the new one with comment=None remains.)
     
     def finish_ab_testing(self):
         """Complete A/B testing and save results"""
