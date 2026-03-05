@@ -911,6 +911,9 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                 if not cap.isOpened():
                     self.status_label.config(text="Error: Cannot open camera", foreground="red")
                     return
+                # Set camera resolution to 1280x480 for side-by-side
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             
             running = True
             self.running = True
@@ -1098,32 +1101,32 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
             success, frame = cap.read()
             if not success:
                 break
-            
             frame_count += 1
             h, w, _ = frame.shape
-            
-            # Resize frame for display if needed
-            display_frame = frame.copy()
+            # If camera is set to 1280x480, extract left image (640x480)
+            if w == 1280 and h == 480:
+                left_img = frame[:, :640]
+                display_frame = left_img.copy()
+            else:
+                display_frame = frame.copy()
             
             # Decide whether to run face detection
             run_detection = False
             if not tracking_active:
                 if frame_count == 1 or frame_count % detect_interval == 0:
                     run_detection = True
-            
             landmarks_display = None
             landmarks_display_clean = None
-            
             # Run face detection if needed
+            # Use left_img if available, else frame
+            process_img = display_frame
             if run_detection:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_rgb = cv2.cvtColor(process_img, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 results = detector.detect(mp_image)
-                
                 if results.detections:
                     detection = results.detections[0]
                     bbox = detection.bounding_box
-                    
                     x = bbox.origin_x
                     y = bbox.origin_y
                     width = bbox.width
