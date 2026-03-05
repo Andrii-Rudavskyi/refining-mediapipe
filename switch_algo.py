@@ -381,37 +381,38 @@ class AlgoSwitcherGUI:
         return self.write_ini(config)
     
     def load_tests_from_excel(self):
-        """Load tests and instructions from instructions.xlsx"""
-        excel_path = os.path.join(self.get_resource_dir(), "abtesting_instructions", "instructions.xlsx")
-        
-        if not os.path.exists(excel_path):
-            messagebox.showerror("Error", f"Instructions file not found:\n{excel_path}")
-            return False
-        
-        try:
-            df = pd.read_excel(excel_path)
-            
-            # Expecting columns: 'Test Name' and 'Instruction'
-            if 'Test Name' not in df.columns or 'Instruction' not in df.columns:
-                messagebox.showerror("Error", "Excel file must have 'Test Name' and 'Instruction' columns")
-                return False
-            
-            self.ab_tests = []
-            for _, row in df.iterrows():
-                self.ab_tests.append({
-                    'name': str(row['Test Name']),
-                    'instruction': str(row['Instruction'])
-                })
-            
-            if len(self.ab_tests) == 0:
-                messagebox.showerror("Error", "No tests found in instructions.xlsx")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read instructions.xlsx:\n{str(e)}")
-            return False
+        """Load tests and instructions from instructions.xlsx in working directory, fallback to hardcoded if missing or error"""
+        # Always use working directory (next to exe or script)
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        excel_path = os.path.join(exe_dir, "abtesting_instructions", "instructions.xlsx")
+        self.ab_tests = []
+        if os.path.exists(excel_path):
+            try:
+                df = pd.read_excel(excel_path)
+                # Expecting columns: 'Test Name' and 'Instruction'
+                if 'Test Name' in df.columns and 'Instruction' in df.columns:
+                    for _, row in df.iterrows():
+                        self.ab_tests.append({
+                            'name': str(row['Test Name']),
+                            'instruction': str(row['Instruction'])
+                        })
+                if len(self.ab_tests) == 0:
+                    messagebox.showerror("Error", "No tests found in instructions.xlsx")
+                    return False
+                return True
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to read instructions.xlsx:\n{str(e)}\nUsing default instructions.")
+        else:
+            messagebox.showerror("Error", f"Instructions file not found:\n{excel_path}\nUsing default instructions.")
+
+        # Fallback: hardcoded instructions
+        self.ab_tests = [
+            {'name': 'Test 1', 'instruction': 'Follow the dot with your eyes.'},
+            {'name': 'Test 2', 'instruction': 'Look left and right quickly.'},
+            {'name': 'Test 3', 'instruction': 'Blink three times.'},
+            {'name': 'Test 4', 'instruction': 'Focus on the center for 5 seconds.'}
+        ]
+        return True
     
     def start_test_sequence(self):
         """Start the A/B testing sequence"""
