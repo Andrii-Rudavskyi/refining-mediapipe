@@ -1,0 +1,7 @@
+%YAML:1.0
+---
+imageWidth: 640
+imageHeight: 480
+cameraIdentifier1: "vid_05c8&pid_023b&mi_00_1L"
+cameraIdentifier2: "vid_05c8&pid_023b&mi_00_1R"
+singleCamera:false

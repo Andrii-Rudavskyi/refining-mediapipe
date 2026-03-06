@@ -17,6 +17,10 @@ matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
+from Triangulation import Triangulation
+from datastructs import SRVector2D, SRVector3D
+
+triangulation = Triangulation('./resources')
 
 # Model paths
 model_path = 'blaze_face_short_range.tflite'
@@ -76,6 +80,10 @@ class FaceDetectionGUI:
         
         self.video_label = ttk.Label(video_frame)
         self.video_label.pack()
+
+        # Label for triangulated pupil coordinates
+        self.xyz_label = ttk.Label(video_frame, text="Triangulated Pupils: (x, y, z)", foreground="blue", font=("Courier", 10))
+        self.xyz_label.pack(pady=5)
         
         # Load video button
         self.load_video_button = ttk.Button(video_frame, text="Load Video", command=self.load_video)
@@ -1111,8 +1119,6 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
             else:
                 left_img = frame.copy()
                 right_img = frame.copy()
-
-            # Helper to process one side
             def process_side(img, tracked_bbox, tracking_active):
                 display_frame = img.copy()
                 run_detection = False
@@ -1121,6 +1127,8 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                         run_detection = True
                 landmarks_display = None
                 landmarks_display_clean = None
+                left_pupil_pos = None
+                right_pupil_pos = None
                 if run_detection:
                     frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
@@ -1286,8 +1294,9 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                                 ly_rotated = scaled_y + ly_crop
                                 point_rotated = np.array([[lx_rotated, ly_rotated, 1.0]])
                                 point_original = vis_rotation_matrix.dot(point_rotated.T).T
-                                left_pupil_x = int(point_original[0, 0])
-                                left_pupil_y = int(point_original[0, 1])
+                                left_pupil_x = point_original[0, 0]
+                                left_pupil_y = point_original[0, 1]
+                                left_pupil_pos = (float(left_pupil_x), float(left_pupil_y), float(lz))
                                 rx_crop = right_pupil_crop[0] * scale_x_pupil
                                 ry_crop = right_pupil_crop[1] * scale_y_pupil
                                 rz = right_pupil_crop[2]
@@ -1295,11 +1304,12 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                                 ry_rotated = scaled_y + ry_crop
                                 point_rotated = np.array([[rx_rotated, ry_rotated, 1.0]])
                                 point_original = vis_rotation_matrix.dot(point_rotated.T).T
-                                right_pupil_x = int(point_original[0, 0])
-                                right_pupil_y = int(point_original[0, 1])
-                                cv2.putText(display_frame, f"L Pupil: ({left_pupil_x}, {left_pupil_y}, {lz:.2f})", (10, 90),
+                                right_pupil_x = point_original[0, 0]
+                                right_pupil_y = point_original[0, 1]
+                                right_pupil_pos = (float(right_pupil_x), float(right_pupil_y), float(rz))
+                                cv2.putText(display_frame, f"L Pupil: ({left_pupil_x:.2f}, {left_pupil_y:.2f}, {lz:.2f})", (10, 90),
                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                                cv2.putText(display_frame, f"R Pupil: ({right_pupil_x}, {right_pupil_y}, {rz:.2f})", (10, 120),
+                                cv2.putText(display_frame, f"R Pupil: ({right_pupil_x:.2f}, {right_pupil_y:.2f}, {rz:.2f})", (10, 120),
                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                             ones = np.ones((4, 1))
                             box_corners_homogeneous = np.hstack([box_corners, ones])
@@ -1347,16 +1357,31 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                                         else:
                                             cv2.circle(display_frame, (x_orig, y_orig), 2, (0, 255, 255), -1)
-                return display_frame, landmarks_display, landmarks_display_clean, tracked_bbox, tracking_active
+                # Return pupil positions (subpixel accuracy) as part of output
+                return display_frame, landmarks_display, landmarks_display_clean, tracked_bbox, tracking_active, left_pupil_pos, right_pupil_pos
 
             # Process left and right sides
             left_result = process_side(left_img, tracked_bbox_left, tracking_active_left)
             right_result = process_side(right_img, tracked_bbox_right, tracking_active_right)
-            display_left, crop_left, crop_left_clean, tracked_bbox_left, tracking_active_left = left_result
-            display_right, crop_right, crop_right_clean, tracked_bbox_right, tracking_active_right = right_result
+            display_left, crop_left, crop_left_clean, tracked_bbox_left, tracking_active_left, left_pupil_pos, right_pupil_pos = left_result
+            display_right, crop_right, crop_right_clean, tracked_bbox_right, tracking_active_right, left_pupil_pos_r, right_pupil_pos_r = right_result
 
-            # Concatenate left and right for display, preserving aspect ratio
-            # Each side is 640x480, so total is 1280x480
+            #print(f"Left pupil pos: {left_pupil_pos}, Right pupil pos: {right_pupil_pos}")
+
+
+            if left_pupil_pos is not None and right_pupil_pos is not None and left_pupil_pos_r is not None and right_pupil_pos_r is not None:
+                points1 = np.array([[left_pupil_pos[0], left_pupil_pos[1]],
+                                    [right_pupil_pos[0], right_pupil_pos[1]]], dtype=np.float64)
+                points2 = np.array([[left_pupil_pos_r[0], left_pupil_pos_r[1]],
+                                    [right_pupil_pos_r[0], right_pupil_pos_r[1]]], dtype=np.float64)
+                xyz = triangulation.triangulate(points1, points2)
+                # Update GUI label with triangulated coordinates
+                xyz_text = f"Triangulated Pupils: L ({xyz[0,0]:.2f}, {xyz[0,1]:.2f}, {xyz[0,2]:.2f}) | R ({xyz[1,0]:.2f}, {xyz[1,1]:.2f}, {xyz[1,2]:.2f})"
+                self.xyz_label.config(text=xyz_text)
+                print(f"Triangulated 3D coordinates (scaled): {xyz}")
+            else:
+                self.xyz_label.config(text="Triangulated Pupils: (no data)")
+
             display_frame = np.concatenate([display_left, display_right], axis=1)
 
             # Store frames in buffer for GUI update
