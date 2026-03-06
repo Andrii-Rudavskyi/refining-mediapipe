@@ -84,6 +84,10 @@ class FaceDetectionGUI:
         # Label for triangulated pupil coordinates
         self.xyz_label = ttk.Label(video_frame, text="Triangulated Pupils: (x, y, z)", foreground="blue", font=("Courier", 10))
         self.xyz_label.pack(pady=5)
+
+        #label for IPD
+        self.ipd_label = ttk.Label(video_frame, text="IPD: (mm)", foreground="green", font=("Courier", 10))
+        self.ipd_label.pack(pady=5)
         
         # Load video button
         self.load_video_button = ttk.Button(video_frame, text="Load Video", command=self.load_video)
@@ -1375,12 +1379,17 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                 points2 = np.array([[left_pupil_pos_r[0], left_pupil_pos_r[1]],
                                     [right_pupil_pos_r[0], right_pupil_pos_r[1]]], dtype=np.float64)
                 xyz = triangulation.triangulate(points1, points2)
+
+                ipd = np.linalg.norm(xyz[0] - xyz[1])
+                ipd_text = f"IPD: {ipd:.2f} mm"
                 # Update GUI label with triangulated coordinates
                 xyz_text = f"Triangulated Pupils: L ({xyz[0,0]:.2f}, {xyz[0,1]:.2f}, {xyz[0,2]:.2f}) | R ({xyz[1,0]:.2f}, {xyz[1,1]:.2f}, {xyz[1,2]:.2f})"
                 self.xyz_label.config(text=xyz_text)
+                self.ipd_label.config(text=ipd_text)
                 print(f"Triangulated 3D coordinates (scaled): {xyz}")
             else:
                 self.xyz_label.config(text="Triangulated Pupils: (no data)")
+                self.ipd_label.config(text="IPD: (no data)")
 
             display_frame = np.concatenate([display_left, display_right], axis=1)
 
