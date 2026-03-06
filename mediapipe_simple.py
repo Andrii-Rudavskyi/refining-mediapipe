@@ -1090,398 +1090,288 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
             image_save_counter = 0
     
     def process_video(self):
-        global cap, running, tracked_bbox, tracking_active, frame_count
-        global recording_video, recording_crop, video_writer, crop_writer
-        
-        tracked_bbox = None
-        tracking_active = False
+        global cap, running, recording_video, recording_crop, video_writer, crop_writer
+        # Stereo tracking states
+        tracked_bbox_left = None
+        tracking_active_left = False
+        tracked_bbox_right = None
+        tracking_active_right = False
         frame_count = 0
-        
+
         while running and cap.isOpened():
             success, frame = cap.read()
             if not success:
                 break
             frame_count += 1
             h, w, _ = frame.shape
-            # If camera is set to 1280x480, extract left image (640x480)
+            # If camera is set to 1280x480, extract left/right images (640x480 each)
             if w == 1280 and h == 480:
                 left_img = frame[:, :640]
-                display_frame = left_img.copy()
+                right_img = frame[:, 640:]
             else:
-                display_frame = frame.copy()
-            
-            # Decide whether to run face detection
-            run_detection = False
-            if not tracking_active:
-                if frame_count == 1 or frame_count % detect_interval == 0:
-                    run_detection = True
-            landmarks_display = None
-            landmarks_display_clean = None
-            # Run face detection if needed
-            # Use left_img if available, else frame
-            process_img = display_frame
-            if run_detection:
-                frame_rgb = cv2.cvtColor(process_img, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                results = detector.detect(mp_image)
-                if results.detections:
-                    detection = results.detections[0]
-                    bbox = detection.bounding_box
-                    x = bbox.origin_x
-                    y = bbox.origin_y
-                    width = bbox.width
-                    height = bbox.height
-                    
-                    tracked_bbox = {
-                        'x': x,
-                        'y': y,
-                        'width': width,
-                        'height': height,
-                        'confidence': detection.categories[0].score
-                    }
-                    tracking_active = True
-                    cv2.putText(display_frame, "DETECTING", (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                else:
-                    tracking_active = False
-                    tracked_bbox = None
-            else:
-                if tracked_bbox is not None:
-                    cv2.putText(display_frame, "TRACKING", (10, 30),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Process landmarks if we have a bounding box
-            if tracked_bbox is not None:
-                x = tracked_bbox['x']
-                y = tracked_bbox['y']
-                width = tracked_bbox['width']
-                height = tracked_bbox['height']
-                
-                center_x = x + width / 2
-                center_y = y + height / 2
-                
-                # First, get a quick crop to detect head orientation
-                scale_factor = self.scale_factor_var.get()
-                scaled_width = width * scale_factor
-                scaled_height = height * scale_factor
-                scaled_x = int(center_x - scaled_width / 2)
-                scaled_y = int(center_y - scaled_height / 2)
-                scaled_x2 = int(center_x + scaled_width / 2)
-                scaled_y2 = int(center_y + scaled_height / 2)
-                
-                scaled_x = max(0, scaled_x)
-                scaled_y = max(0, scaled_y)
-                scaled_x2 = min(w, scaled_x2)
-                scaled_y2 = min(h, scaled_y2)
-                
-                cropped_temp = frame[scaled_y:scaled_y2, scaled_x:scaled_x2]
-                
-                if cropped_temp.size > 0:
-                    cropped_rgb_temp = cv2.cvtColor(cropped_temp, cv2.COLOR_BGR2RGB)
-                    landmarks_input_temp = cv2.resize(cropped_rgb_temp, (landmarks_w, landmarks_h))
-                    
-                    # First pass: detect landmarks to get head orientation
-                    landmarks_input_first = (landmarks_input_temp.astype(np.float32) / 127.5) - 1.0
-                    landmarks_input_first = np.expand_dims(landmarks_input_first, axis=0)
-                    
-                    landmarks_interpreter.set_tensor(landmarks_input_details[0]['index'], landmarks_input_first)
-                    landmarks_interpreter.invoke()
-                    
-                    landmarks_raw_first = landmarks_interpreter.get_tensor(landmarks_output_details[0]['index'])[0]
-                    landmarks_first = landmarks_raw_first.reshape(-1, 3)
-                    
-                    # Calculate head orientation using eye landmarks
-                    left_eye_idx = 33
-                    right_eye_idx = 263
-                    
-                    angle_deg = 0
-                    if len(landmarks_first) > max(left_eye_idx, right_eye_idx):
-                        left_eye = landmarks_first[left_eye_idx]
-                        right_eye = landmarks_first[right_eye_idx]
-                        
-                        dx = right_eye[0] - left_eye[0]
-                        dy = right_eye[1] - left_eye[1]
-                        angle_rad = np.arctan2(dy, dx)
-                        angle_deg = np.degrees(angle_rad)
-                    
-                    # Now rotate the bounding box and crop from the rotated frame
-                    # Get rotation matrix for the full frame around the face center
-                    rotation_matrix = cv2.getRotationMatrix2D((center_x, center_y), angle_deg, 1.0)
-                    
-                    # Rotate the entire frame
-                    frame_rotated = cv2.warpAffine(frame, rotation_matrix, (w, h))
-                    
-                    # Crop from the rotated frame using the same bounding box coordinates
-                    cropped = frame_rotated[scaled_y:scaled_y2, scaled_x:scaled_x2]
-                    
-                    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                    landmarks_input_resized = cv2.resize(cropped_rgb, (landmarks_w, landmarks_h))
-                    
-                    # Create display copies
-                    landmarks_display = landmarks_input_resized.copy()
-                    landmarks_display_clean = landmarks_input_resized.copy()
-                    
-                    # Second pass: detect landmarks on rotated crop
-                    landmarks_input = (landmarks_input_resized.astype(np.float32) / 127.5) - 1.0
-                    landmarks_input = np.expand_dims(landmarks_input, axis=0)
-                    
-                    landmarks_interpreter.set_tensor(landmarks_input_details[0]['index'], landmarks_input)
-                    landmarks_interpreter.invoke()
-                    
-                    landmarks_raw = landmarks_interpreter.get_tensor(landmarks_output_details[0]['index'])[0]
-                    
-                    landmarks_score = None
-                    if len(landmarks_output_details) > 1:
-                        landmarks_score_raw = landmarks_interpreter.get_tensor(landmarks_output_details[1]['index'])
-                        landmarks_score = float(landmarks_score_raw.flatten()[0])
-                    
-                    landmarks = landmarks_raw.reshape(-1, 3)
-                    
-                    if landmarks_score is not None and landmarks_score < 0:
+                left_img = frame.copy()
+                right_img = frame.copy()
+
+            # Helper to process one side
+            def process_side(img, tracked_bbox, tracking_active):
+                display_frame = img.copy()
+                run_detection = False
+                if not tracking_active:
+                    if frame_count == 1 or frame_count % detect_interval == 0:
+                        run_detection = True
+                landmarks_display = None
+                landmarks_display_clean = None
+                if run_detection:
+                    frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                    results = detector.detect(mp_image)
+                    if results.detections:
+                        detection = results.detections[0]
+                        bbox = detection.bounding_box
+                        x = bbox.origin_x
+                        y = bbox.origin_y
+                        width = bbox.width
+                        height = bbox.height
+                        tracked_bbox = {
+                            'x': x,
+                            'y': y,
+                            'width': width,
+                            'height': height,
+                            'confidence': detection.categories[0].score
+                        }
+                        tracking_active = True
+                        cv2.putText(display_frame, "DETECTING", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    else:
                         tracking_active = False
                         tracked_bbox = None
-                        print(f"Tracking lost: score={landmarks_score:.3f}")
-                        landmarks_display = None
-                        landmarks_display_clean = None
-                    else:
-                        landmarks_x = landmarks[:, 0]
-                        landmarks_y = landmarks[:, 1]
-                        
-                        min_x = np.min(landmarks_x)
-                        max_x = np.max(landmarks_x)
-                        min_y = np.min(landmarks_y)
-                        max_y = np.max(landmarks_y)
-                        
-                        scale_x = (scaled_x2 - scaled_x) / landmarks_w
-                        scale_y = (scaled_y2 - scaled_y) / landmarks_h
-                        
-                        predicted_x = int(scaled_x + min_x * scale_x)
-                        predicted_y = int(scaled_y + min_y * scale_y)
-                        predicted_width = int((max_x - min_x) * scale_x)
-                        predicted_height = int((max_y - min_y) * scale_y)
-                        
-                        predicted_size = max(predicted_width, predicted_height)
-                        
-                        predicted_center_x = predicted_x + predicted_width / 2
-                        predicted_center_y = predicted_y + predicted_height / 2
-                        predicted_x = int(predicted_center_x - predicted_size / 2)
-                        predicted_y = int(predicted_center_y - predicted_size / 2)
-                        predicted_width = predicted_size
-                        predicted_height = predicted_size
-                        
-                        padding = 0.1
-                        predicted_x = int(predicted_x - predicted_width * padding)
-                        predicted_y = int(predicted_y - predicted_height * padding)
-                        predicted_width = int(predicted_width * (1 + 2 * padding))
-                        predicted_height = int(predicted_height * (1 + 2 * padding))
-                        
-                        predicted_x = max(0, predicted_x)
-                        predicted_y = max(0, predicted_y)
-                        predicted_width = min(w - predicted_x, predicted_width)
-                        predicted_height = min(h - predicted_y, predicted_height)
-                        
-                        tracked_bbox = {
-                            'x': predicted_x,
-                            'y': predicted_y,
-                            'width': predicted_width,
-                            'height': predicted_height,
-                            'confidence': landmarks_score if landmarks_score is not None else 0.5
-                        }
-                        
-                        if landmarks_score is not None:
-                            cv2.putText(display_frame, f"Score: {landmarks_score:.3f}", (10, 60),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                        
-                        num_landmarks = landmarks.shape[0]
-                        
-                        for i in range(num_landmarks):
-                            x_pixel = landmarks[i, 0]
-                            y_pixel = landmarks[i, 1]
-                            
-                            x_pixel = max(0, min(landmarks_w - 1, x_pixel))
-                            y_pixel = max(0, min(landmarks_h - 1, y_pixel))
-                            
-                            cv2.circle(landmarks_display, 
-                                      (int(x_pixel * 16), int(y_pixel * 16)), 
-                                      32,
-                                      (0, 255, 255), 
-                                      -1, 
-                                      cv2.LINE_AA,
-                                      shift=4)
-                        
-                        # Draw rotated bounding boxes on original frame
-                        # Calculate the four corners of the scaled bounding box
-                        box_corners = np.array([
-                            [scaled_x, scaled_y],
-                            [scaled_x2, scaled_y],
-                            [scaled_x2, scaled_y2],
-                            [scaled_x, scaled_y2]
-                        ], dtype=np.float32)
-                        
-                        # Create rotation matrix around face center to visualize the rotated crop
-                        # This shows where the crop would be if we rotate the box
-                        vis_rotation_matrix = cv2.getRotationMatrix2D((center_x, center_y), -angle_deg, 1.0)
-                        
-                        # Calculate and display pupil positions on original frame
-                        left_pupil_idx = 468  # Left iris center
-                        right_pupil_idx = 473  # Right iris center
-                        
-                        if num_landmarks > max(left_pupil_idx, right_pupil_idx):
-                            # Get pupil positions in crop space
-                            left_pupil_crop = landmarks[left_pupil_idx]
-                            right_pupil_crop = landmarks[right_pupil_idx]
-                            
-                            # Transform to original frame coordinates
-                            crop_h, crop_w = cropped.shape[:2]
-                            scale_x_pupil = crop_w / landmarks_w
-                            scale_y_pupil = crop_h / landmarks_h
-                            
-                            # Left pupil
-                            lx_crop = left_pupil_crop[0] * scale_x_pupil
-                            ly_crop = left_pupil_crop[1] * scale_y_pupil
-                            lz = left_pupil_crop[2]  # Z coordinate from model
-                            lx_rotated = scaled_x + lx_crop
-                            ly_rotated = scaled_y + ly_crop
-                            point_rotated = np.array([[lx_rotated, ly_rotated, 1.0]])
-                            point_original = vis_rotation_matrix.dot(point_rotated.T).T
-                            left_pupil_x = int(point_original[0, 0])
-                            left_pupil_y = int(point_original[0, 1])
-                            
-                            # Right pupil
-                            rx_crop = right_pupil_crop[0] * scale_x_pupil
-                            ry_crop = right_pupil_crop[1] * scale_y_pupil
-                            rz = right_pupil_crop[2]  # Z coordinate from model
-                            rx_rotated = scaled_x + rx_crop
-                            ry_rotated = scaled_y + ry_crop
-                            point_rotated = np.array([[rx_rotated, ry_rotated, 1.0]])
-                            point_original = vis_rotation_matrix.dot(point_rotated.T).T
-                            right_pupil_x = int(point_original[0, 0])
-                            right_pupil_y = int(point_original[0, 1])
-                            
-                            # Display coordinates under score
-                            cv2.putText(display_frame, f"L Pupil: ({left_pupil_x}, {left_pupil_y}, {lz:.2f})", (10, 90),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                            cv2.putText(display_frame, f"R Pupil: ({right_pupil_x}, {right_pupil_y}, {rz:.2f})", (10, 120),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                        
-                        # Transform corners using rotation matrix
-                        ones = np.ones((4, 1))
-                        box_corners_homogeneous = np.hstack([box_corners, ones])
-                        box_corners_rotated = vis_rotation_matrix.dot(box_corners_homogeneous.T).T
-                        box_corners_rotated = box_corners_rotated.astype(np.int32)
-                        
-                        # Draw rotated blue rectangle (scaled processing box)
-                        cv2.polylines(display_frame, [box_corners_rotated], True, (255, 0, 0), 2)
-                        
-                        # Draw rotated green rectangle (original face box)
-                        box_corners_orig = np.array([
-                            [x, y],
-                            [x + width, y],
-                            [x + width, y + height],
-                            [x, y + height]
-                        ], dtype=np.float32)
-                        
-                        ones_orig = np.ones((4, 1))
-                        box_corners_orig_homogeneous = np.hstack([box_corners_orig, ones_orig])
-                        box_corners_orig_rotated = vis_rotation_matrix.dot(box_corners_orig_homogeneous.T).T
-                        box_corners_orig_rotated = box_corners_orig_rotated.astype(np.int32)
-                        
-                        cv2.polylines(display_frame, [box_corners_orig_rotated], True, (0, 255, 0), 2)
-                        
-                        confidence = tracked_bbox.get('confidence', 0.0)
-                        # Put text at the first corner of the rotated green box
-                        cv2.putText(display_frame, f"{confidence:.2f}", 
-                                   tuple(box_corners_orig_rotated[0]), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                        
-                        # Draw landmarks on original video frame if checkbox is enabled
-                        if self.show_landmarks_on_video.get():
-                            # Transform landmarks from crop space back to original frame
-                            crop_h, crop_w = cropped.shape[:2]
-                            scale_x = crop_w / landmarks_w
-                            scale_y = crop_h / landmarks_h
-                            
-                            # Pupil landmark indices
+                else:
+                    if tracked_bbox is not None:
+                        cv2.putText(display_frame, "TRACKING", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                # Process landmarks if we have a bounding box
+                if tracked_bbox is not None:
+                    x = tracked_bbox['x']
+                    y = tracked_bbox['y']
+                    width = tracked_bbox['width']
+                    height = tracked_bbox['height']
+                    center_x = x + width / 2
+                    center_y = y + height / 2
+                    scale_factor = self.scale_factor_var.get()
+                    scaled_width = width * scale_factor
+                    scaled_height = height * scale_factor
+                    scaled_x = int(center_x - scaled_width / 2)
+                    scaled_y = int(center_y - scaled_height / 2)
+                    scaled_x2 = int(center_x + scaled_width / 2)
+                    scaled_y2 = int(center_y + scaled_height / 2)
+                    scaled_x = max(0, scaled_x)
+                    scaled_y = max(0, scaled_y)
+                    scaled_x2 = min(img.shape[1], scaled_x2)
+                    scaled_y2 = min(img.shape[0], scaled_y2)
+                    cropped_temp = img[scaled_y:scaled_y2, scaled_x:scaled_x2]
+                    if cropped_temp.size > 0:
+                        cropped_rgb_temp = cv2.cvtColor(cropped_temp, cv2.COLOR_BGR2RGB)
+                        landmarks_input_temp = cv2.resize(cropped_rgb_temp, (landmarks_w, landmarks_h))
+                        landmarks_input_first = (landmarks_input_temp.astype(np.float32) / 127.5) - 1.0
+                        landmarks_input_first = np.expand_dims(landmarks_input_first, axis=0)
+                        landmarks_interpreter.set_tensor(landmarks_input_details[0]['index'], landmarks_input_first)
+                        landmarks_interpreter.invoke()
+                        landmarks_raw_first = landmarks_interpreter.get_tensor(landmarks_output_details[0]['index'])[0]
+                        landmarks_first = landmarks_raw_first.reshape(-1, 3)
+                        left_eye_idx = 33
+                        right_eye_idx = 263
+                        angle_deg = 0
+                        if len(landmarks_first) > max(left_eye_idx, right_eye_idx):
+                            left_eye = landmarks_first[left_eye_idx]
+                            right_eye = landmarks_first[right_eye_idx]
+                            dx = right_eye[0] - left_eye[0]
+                            dy = right_eye[1] - left_eye[1]
+                            angle_rad = np.arctan2(dy, dx)
+                            angle_deg = np.degrees(angle_rad)
+                        rotation_matrix = cv2.getRotationMatrix2D((center_x, center_y), angle_deg, 1.0)
+                        frame_rotated = cv2.warpAffine(img, rotation_matrix, (img.shape[1], img.shape[0]))
+                        cropped = frame_rotated[scaled_y:scaled_y2, scaled_x:scaled_x2]
+                        cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                        landmarks_input_resized = cv2.resize(cropped_rgb, (landmarks_w, landmarks_h))
+                        landmarks_display = landmarks_input_resized.copy()
+                        landmarks_display_clean = landmarks_input_resized.copy()
+                        landmarks_input = (landmarks_input_resized.astype(np.float32) / 127.5) - 1.0
+                        landmarks_input = np.expand_dims(landmarks_input, axis=0)
+                        landmarks_interpreter.set_tensor(landmarks_input_details[0]['index'], landmarks_input)
+                        landmarks_interpreter.invoke()
+                        landmarks_raw = landmarks_interpreter.get_tensor(landmarks_output_details[0]['index'])[0]
+                        landmarks_score = None
+                        if len(landmarks_output_details) > 1:
+                            landmarks_score_raw = landmarks_interpreter.get_tensor(landmarks_output_details[1]['index'])
+                            landmarks_score = float(landmarks_score_raw.flatten()[0])
+                        landmarks = landmarks_raw.reshape(-1, 3)
+                        if landmarks_score is not None and landmarks_score < 0:
+                            tracking_active = False
+                            tracked_bbox = None
+                            landmarks_display = None
+                            landmarks_display_clean = None
+                        else:
+                            landmarks_x = landmarks[:, 0]
+                            landmarks_y = landmarks[:, 1]
+                            min_x = np.min(landmarks_x)
+                            max_x = np.max(landmarks_x)
+                            min_y = np.min(landmarks_y)
+                            max_y = np.max(landmarks_y)
+                            scale_x = (scaled_x2 - scaled_x) / landmarks_w
+                            scale_y = (scaled_y2 - scaled_y) / landmarks_h
+                            predicted_x = int(scaled_x + min_x * scale_x)
+                            predicted_y = int(scaled_y + min_y * scale_y)
+                            predicted_width = int((max_x - min_x) * scale_x)
+                            predicted_height = int((max_y - min_y) * scale_y)
+                            predicted_size = max(predicted_width, predicted_height)
+                            predicted_center_x = predicted_x + predicted_width / 2
+                            predicted_center_y = predicted_y + predicted_height / 2
+                            predicted_x = int(predicted_center_x - predicted_size / 2)
+                            predicted_y = int(predicted_center_y - predicted_size / 2)
+                            predicted_width = predicted_size
+                            predicted_height = predicted_size
+                            padding = 0.1
+                            predicted_x = int(predicted_x - predicted_width * padding)
+                            predicted_y = int(predicted_y - predicted_height * padding)
+                            predicted_width = int(predicted_width * (1 + 2 * padding))
+                            predicted_height = int(predicted_height * (1 + 2 * padding))
+                            predicted_x = max(0, predicted_x)
+                            predicted_y = max(0, predicted_y)
+                            predicted_width = min(img.shape[1] - predicted_x, predicted_width)
+                            predicted_height = min(img.shape[0] - predicted_y, predicted_height)
+                            tracked_bbox = {
+                                'x': predicted_x,
+                                'y': predicted_y,
+                                'width': predicted_width,
+                                'height': predicted_height,
+                                'confidence': landmarks_score if landmarks_score is not None else 0.5
+                            }
+                            if landmarks_score is not None:
+                                cv2.putText(display_frame, f"Score: {landmarks_score:.3f}", (10, 60),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                            num_landmarks = landmarks.shape[0]
+                            for i in range(num_landmarks):
+                                x_pixel = landmarks[i, 0]
+                                y_pixel = landmarks[i, 1]
+                                x_pixel = max(0, min(landmarks_w - 1, x_pixel))
+                                y_pixel = max(0, min(landmarks_h - 1, y_pixel))
+                                cv2.circle(landmarks_display, 
+                                          (int(x_pixel * 16), int(y_pixel * 16)), 
+                                          32,
+                                          (0, 255, 255), 
+                                          -1, 
+                                          cv2.LINE_AA,
+                                          shift=4)
+                            # Draw rotated bounding boxes on original frame
+                            box_corners = np.array([
+                                [scaled_x, scaled_y],
+                                [scaled_x2, scaled_y],
+                                [scaled_x2, scaled_y2],
+                                [scaled_x, scaled_y2]
+                            ], dtype=np.float32)
+                            vis_rotation_matrix = cv2.getRotationMatrix2D((center_x, center_y), -angle_deg, 1.0)
                             left_pupil_idx = 468
                             right_pupil_idx = 473
-                            
-                            for i in range(num_landmarks):
-                                # Scale from model output (256x256) to crop size
-                                lx_crop = landmarks[i, 0] * scale_x
-                                ly_crop = landmarks[i, 1] * scale_y
-                                
-                                # Translate to position in rotated frame
+                            if num_landmarks > max(left_pupil_idx, right_pupil_idx):
+                                left_pupil_crop = landmarks[left_pupil_idx]
+                                right_pupil_crop = landmarks[right_pupil_idx]
+                                crop_h, crop_w = cropped.shape[:2]
+                                scale_x_pupil = crop_w / landmarks_w
+                                scale_y_pupil = crop_h / landmarks_h
+                                lx_crop = left_pupil_crop[0] * scale_x_pupil
+                                ly_crop = left_pupil_crop[1] * scale_y_pupil
+                                lz = left_pupil_crop[2]
                                 lx_rotated = scaled_x + lx_crop
                                 ly_rotated = scaled_y + ly_crop
-                                
-                                # Apply inverse rotation to get original frame coordinates
                                 point_rotated = np.array([[lx_rotated, ly_rotated, 1.0]])
                                 point_original = vis_rotation_matrix.dot(point_rotated.T).T
-                                
-                                x_orig = int(point_original[0, 0])
-                                y_orig = int(point_original[0, 1])
-                                
-                                # Draw on original frame
-                                if 0 <= x_orig < w and 0 <= y_orig < h:
-                                    # Draw larger circles and labels for pupils
-                                    if i == left_pupil_idx:
-                                        cv2.circle(display_frame, (x_orig, y_orig), 5, (0, 255, 0), -1)
-                                        cv2.putText(display_frame, f"L", (x_orig + 10, y_orig - 10),
-                                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                                    elif i == right_pupil_idx:
-                                        cv2.circle(display_frame, (x_orig, y_orig), 5, (0, 255, 0), -1)
-                                        cv2.putText(display_frame, f"R", (x_orig + 10, y_orig - 10),
-                                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                                    else:
-                                        cv2.circle(display_frame, (x_orig, y_orig), 2, (0, 255, 255), -1)
-            
-            # Record if needed
-            if recording_video and video_writer is not None:
-                video_writer.write(frame)  # Record raw video without overlays
-                
-                # Write landmarks to CSV
-                global video_landmarks_csv_writer, video_frame_counter
-                if video_landmarks_csv_writer is not None and 'landmarks' in locals():
-                    video_frame_counter += 1
-                    landmarks_flat = landmarks.flatten().tolist()
-                    video_landmarks_csv_writer.writerow([video_frame_counter] + landmarks_flat)
-            
-            if recording_crop and crop_writer is not None:
-                # Record based on landmarks checkbox state
-                if self.show_landmarks.get() and landmarks_display is not None:
-                    crop_writer.write(cv2.cvtColor(landmarks_display, cv2.COLOR_RGB2BGR))
-                elif not self.show_landmarks.get() and landmarks_display_clean is not None:
-                    crop_writer.write(cv2.cvtColor(landmarks_display_clean, cv2.COLOR_RGB2BGR))
-            
-            # Save individual images if recording
-            if recording_images and image_save_folder is not None:
-                global image_save_counter, landmarks_csv_writer
-                # Choose which version to save based on landmarks checkbox
-                if self.show_landmarks.get() and landmarks_display is not None:
-                    save_image = cv2.cvtColor(landmarks_display, cv2.COLOR_RGB2BGR)
-                elif not self.show_landmarks.get() and landmarks_display_clean is not None:
-                    save_image = cv2.cvtColor(landmarks_display_clean, cv2.COLOR_RGB2BGR)
-                else:
-                    save_image = None
-                
-                if save_image is not None and 'landmarks' in locals():
-                    image_save_counter += 1
-                    image_filename = f"{image_save_counter:06d}.png"
-                    full_path = f"{image_save_folder}/{image_filename}"
-                    cv2.imwrite(full_path, save_image)
-                    
-                    # Save landmarks to CSV
-                    if landmarks_csv_writer is not None:
-                        # Flatten landmarks array to 1D list
-                        landmarks_flat = landmarks.flatten().tolist()
-                        # Write row: [filename, x0, y0, z0, x1, y1, z1, ...]
-                        landmarks_csv_writer.writerow([image_filename] + landmarks_flat)
-            
+                                left_pupil_x = int(point_original[0, 0])
+                                left_pupil_y = int(point_original[0, 1])
+                                rx_crop = right_pupil_crop[0] * scale_x_pupil
+                                ry_crop = right_pupil_crop[1] * scale_y_pupil
+                                rz = right_pupil_crop[2]
+                                rx_rotated = scaled_x + rx_crop
+                                ry_rotated = scaled_y + ry_crop
+                                point_rotated = np.array([[rx_rotated, ry_rotated, 1.0]])
+                                point_original = vis_rotation_matrix.dot(point_rotated.T).T
+                                right_pupil_x = int(point_original[0, 0])
+                                right_pupil_y = int(point_original[0, 1])
+                                cv2.putText(display_frame, f"L Pupil: ({left_pupil_x}, {left_pupil_y}, {lz:.2f})", (10, 90),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                                cv2.putText(display_frame, f"R Pupil: ({right_pupil_x}, {right_pupil_y}, {rz:.2f})", (10, 120),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            ones = np.ones((4, 1))
+                            box_corners_homogeneous = np.hstack([box_corners, ones])
+                            box_corners_rotated = vis_rotation_matrix.dot(box_corners_homogeneous.T).T
+                            box_corners_rotated = box_corners_rotated.astype(np.int32)
+                            cv2.polylines(display_frame, [box_corners_rotated], True, (255, 0, 0), 2)
+                            box_corners_orig = np.array([
+                                [x, y],
+                                [x + width, y],
+                                [x + width, y + height],
+                                [x, y + height]
+                            ], dtype=np.float32)
+                            ones_orig = np.ones((4, 1))
+                            box_corners_orig_homogeneous = np.hstack([box_corners_orig, ones_orig])
+                            box_corners_orig_rotated = vis_rotation_matrix.dot(box_corners_orig_homogeneous.T).T
+                            box_corners_orig_rotated = box_corners_orig_rotated.astype(np.int32)
+                            cv2.polylines(display_frame, [box_corners_orig_rotated], True, (0, 255, 0), 2)
+                            confidence = tracked_bbox.get('confidence', 0.0)
+                            cv2.putText(display_frame, f"{confidence:.2f}", 
+                                       tuple(box_corners_orig_rotated[0]), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            if self.show_landmarks_on_video.get():
+                                crop_h, crop_w = cropped.shape[:2]
+                                scale_x = crop_w / landmarks_w
+                                scale_y = crop_h / landmarks_h
+                                left_pupil_idx = 468
+                                right_pupil_idx = 473
+                                for i in range(num_landmarks):
+                                    lx_crop = landmarks[i, 0] * scale_x
+                                    ly_crop = landmarks[i, 1] * scale_y
+                                    lx_rotated = scaled_x + lx_crop
+                                    ly_rotated = scaled_y + ly_crop
+                                    point_rotated = np.array([[lx_rotated, ly_rotated, 1.0]])
+                                    point_original = vis_rotation_matrix.dot(point_rotated.T).T
+                                    x_orig = int(point_original[0, 0])
+                                    y_orig = int(point_original[0, 1])
+                                    if 0 <= x_orig < img.shape[1] and 0 <= y_orig < img.shape[0]:
+                                        if i == left_pupil_idx:
+                                            cv2.circle(display_frame, (x_orig, y_orig), 5, (0, 255, 0), -1)
+                                            cv2.putText(display_frame, f"L", (x_orig + 10, y_orig - 10),
+                                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                        elif i == right_pupil_idx:
+                                            cv2.circle(display_frame, (x_orig, y_orig), 5, (0, 255, 0), -1)
+                                            cv2.putText(display_frame, f"R", (x_orig + 10, y_orig - 10),
+                                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                        else:
+                                            cv2.circle(display_frame, (x_orig, y_orig), 2, (0, 255, 255), -1)
+                return display_frame, landmarks_display, landmarks_display_clean, tracked_bbox, tracking_active
+
+            # Process left and right sides
+            left_result = process_side(left_img, tracked_bbox_left, tracking_active_left)
+            right_result = process_side(right_img, tracked_bbox_right, tracking_active_right)
+            display_left, crop_left, crop_left_clean, tracked_bbox_left, tracking_active_left = left_result
+            display_right, crop_right, crop_right_clean, tracked_bbox_right, tracking_active_right = right_result
+
+            # Concatenate left and right for display, preserving aspect ratio
+            # Each side is 640x480, so total is 1280x480
+            display_frame = np.concatenate([display_left, display_right], axis=1)
+
             # Store frames in buffer for GUI update
             with self.frame_lock:
                 self.current_frame = display_frame.copy()
-                self.current_crop = landmarks_display.copy() if landmarks_display is not None else None
-                self.current_crop_no_landmarks = landmarks_display_clean.copy() if landmarks_display_clean is not None else None
+                # For crop display, show both left and right crops side by side
+                # Always output two crops (left and right), black if not detected
+                blank_crop = np.zeros((256, 256, 3), dtype=np.uint8)
+                crop_left_disp = cv2.resize(crop_left, (256, 256)) if crop_left is not None else blank_crop.copy()
+                crop_right_disp = cv2.resize(crop_right, (256, 256)) if crop_right is not None else blank_crop.copy()
+                self.current_crop = np.concatenate([crop_left_disp, crop_right_disp], axis=1)
+
+                crop_left_clean_disp = cv2.resize(crop_left_clean, (256, 256)) if crop_left_clean is not None else blank_crop.copy()
+                crop_right_clean_disp = cv2.resize(crop_right_clean, (256, 256)) if crop_right_clean is not None else blank_crop.copy()
+                self.current_crop_no_landmarks = np.concatenate([crop_left_clean_disp, crop_right_clean_disp], axis=1)
     
     def update_gui(self):
         """Update GUI displays from buffer (runs on main thread)"""
@@ -1490,23 +1380,17 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                 if self.current_frame is not None:
                     # Convert and display main frame
                     frame_rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
-                    frame_resized = cv2.resize(frame_rgb, (640, 480))
+                    # Do not squeeze: keep full width (1280x480)
+                    frame_resized = cv2.resize(frame_rgb, (1280, 480))
                     img = Image.fromarray(frame_resized)
                     imgtk = ImageTk.PhotoImage(image=img)
                     self.video_label.imgtk = imgtk
                     self.video_label.configure(image=imgtk)
-                
                 # Convert and display crop
-                # Choose crop version based on checkbox
-                crop_to_display = None
-                if self.show_landmarks.get():
-                    crop_to_display = self.current_crop
-                else:
-                    crop_to_display = self.current_crop_no_landmarks
-                
+                crop_to_display = self.current_crop if self.show_landmarks.get() else self.current_crop_no_landmarks
                 if crop_to_display is not None:
-                    crop_resized = cv2.resize(crop_to_display, (256, 256))
-                    img_crop = Image.fromarray(crop_resized)
+                    # Already resized to (256, 256) or (512, 256) for both crops
+                    img_crop = Image.fromarray(crop_to_display)
                     imgtk_crop = ImageTk.PhotoImage(image=img_crop)
                     self.crop_label.imgtk = imgtk_crop
                     self.crop_label.configure(image=imgtk_crop)
