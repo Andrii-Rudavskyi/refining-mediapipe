@@ -583,6 +583,31 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
         # Update 3D plot with aligned coordinates
         self.update_3d_plot_aligned()
     
+    # --- Crop 32x32 regions around pupils ---
+    def crop_eye_region(self, img, pupil_pos, crop_size=32):
+        if pupil_pos is None:
+            return np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+        x = int(round(float(pupil_pos[0])))
+        y = int(round(float(pupil_pos[1])))
+        h, w = img.shape[:2]
+        half = crop_size // 2
+        x1 = max(0, x - half)
+        y1 = max(0, y - half)
+        x2 = min(w, x + half)
+        y2 = min(h, y + half)
+        crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+        # Calculate actual region to copy
+        src_x1 = x1
+        src_y1 = y1
+        src_x2 = x2
+        src_y2 = y2
+        dst_x1 = half - (x - x1)
+        dst_y1 = half - (y - y1)
+        dst_x2 = dst_x1 + (src_x2 - src_x1)
+        dst_y2 = dst_y1 + (src_y2 - src_y1)
+        crop[dst_y1:dst_y2, dst_x1:dst_x2] = img[src_y1:src_y2, src_x1:src_x2]
+        return crop
+
     def update_3d_plot_aligned(self):
         """Update 3D plot with aligned landmarks"""
         if self.aligned_landmarks is None:
@@ -1371,9 +1396,38 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
             display_right, crop_right, crop_right_clean, tracked_bbox_right, tracking_active_right, left_pupil_pos_r, right_pupil_pos_r = right_result
 
             #print(f"Left pupil pos: {left_pupil_pos}, Right pupil pos: {right_pupil_pos}")
-
+            
 
             if left_pupil_pos is not None and right_pupil_pos is not None and left_pupil_pos_r is not None and right_pupil_pos_r is not None:
+                left_pupil_left_image = self.crop_eye_region(img=left_img, pupil_pos=left_pupil_pos)
+                right_pupil_left_image = self.crop_eye_region(img=left_img, pupil_pos=right_pupil_pos)
+                left_pupil_right_image = self.crop_eye_region(img=right_img, pupil_pos=left_pupil_pos_r)
+                right_pupil_right_image = self.crop_eye_region(img=right_img, pupil_pos=right_pupil_pos_r)
+                
+
+                upscaled_img = cv2.resize(left_pupil_left_image, (256, 256), interpolation=cv2.INTER_CUBIC)
+                upscaled_img = cv2.GaussianBlur(upscaled_img, (7,7), 0)
+                
+                gray_img = cv2.cvtColor(upscaled_img, cv2.COLOR_BGR2GRAY)
+
+                # Use HoughCircles to detect iris
+                circles = cv2.HoughCircles(gray_img, cv2.HOUGH_GRADIENT, dp=1.5, minDist=30,
+                    param1=100, param2=30, minRadius=5, maxRadius=60
+                )
+
+
+                if circles is not None:
+                    circles = np.uint16(np.around(circles))
+                    for x, y, r in circles[0, :]:
+                        print("Iris diameter (pixels):", r*2)
+
+                cv2.imshow("Left Pupil Left Image", gray_img)
+                cv2.waitKey(1)
+                #cv2.imshow("Right Pupil Left Image", right_pupil_left_image)
+                #cv2.imshow("Left Pupil Right Image", left_pupil_right_image)
+                #cv2.imshow("Right Pupil Right Image", right_pupil_right_image)
+                
+                
                 points1 = np.array([[left_pupil_pos[0], left_pupil_pos[1]],
                                     [right_pupil_pos[0], right_pupil_pos[1]]], dtype=np.float64)
                 points2 = np.array([[left_pupil_pos_r[0], left_pupil_pos_r[1]],
@@ -1388,6 +1442,11 @@ R Mouth:      ({right_mouth_aligned[0]:7.2f}, {right_mouth_aligned[1]:7.2f}, {ri
                 self.ipd_label.config(text=ipd_text)
                 print(f"Triangulated 3D coordinates (scaled): {xyz}")
             else:
+                left_pupil_left_image = np.zeros((32, 32, 3), dtype=np.uint8)
+                right_pupil_left_image = np.zeros((32, 32, 3), dtype=np.uint8)
+                left_pupil_right_image = np.zeros((32, 32, 3), dtype=np.uint8)
+                right_pupil_right_image = np.zeros((32, 32, 3), dtype=np.uint8)
+                
                 self.xyz_label.config(text="Triangulated Pupils: (no data)")
                 self.ipd_label.config(text="IPD: (no data)")
 
